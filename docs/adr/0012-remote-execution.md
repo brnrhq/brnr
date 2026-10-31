@@ -11,6 +11,12 @@ The target is always an SSH destination in
 to SSH; otherwise SSH's own configuration and defaults decide it. Ports,
 keys, jump hosts and connection sharing belong in SSH configuration.
 
+System `ssh` means the executable named `ssh` on the caller's PATH, not a
+pinned path. This applies to every `--remote` command and `remote check`,
+including read verbs. Command rules do not secure that lookup; an agent
+that can plant `ssh` on its PATH can run local code without network access
+or SSH keys (see the [threat model](../threat-model.md#gaps)).
+
 The sequence is:
 
 1. Parse the public command using the existing argument table, with
@@ -117,9 +123,11 @@ destination's doctor. It reads no local brnr configuration. The result and
 exit status are doctor's interface. Checks neither write local config nor
 create a missing config file or directory. Local `doctor` checks local
 profiles only, and does not use SSH. Even without `--fix`, doctor runs
-adapter `--version` probes resolved beside brnr or on PATH. These are
-program starts, not a guarantee that the selected adapters have no side
-effects; `remote check` starts SSH and runs those probes remotely.
+the three `brnr-*-adapter` programs and non-npm `muse-acp` with `--version`,
+resolved beside brnr or on the caller's PATH; it reads npm adapters'
+versions from `package.json`. These are program starts, not a guarantee
+that the selected adapters have no side effects; `remote check` starts SSH
+and runs those probes remotely.
 
 The CLI never writes config (N1). Profiles are maintained by hand, on each
 machine, and keep the private-file and symlink rules (ADR 9.4). An agent
@@ -135,11 +143,12 @@ connects without that flag and runs the destination's diagnostic programs.
 (ADR 8.1); before, it had three: a local execution profile, a local routing
 profile, or a destination profile. `profiles.default.remote` sent a plain
 `brnr acp` or `brnr session new` to another machine, and the command line
-didn't show it (P4). The overrides that a routing table held (`executable`, `cwd`,
-`runtime_dir`, `home`, `config`) are the remote shell's environment, which
-SSH users already keep, so brnr doesn't need a second place for them (P12,
-N4). SSH already owns the connection's identity and authentication; a
-remote-name registry would duplicate its configuration (F5, P4). Commands
+didn't show it (P4). The overrides that a routing table held
+(`executable`, `cwd`, `runtime_dir`, `home`, `config`) are the remote
+shell's environment, which SSH users already keep, so brnr doesn't need
+a second place for them (P12, N4). SSH already owns the connection's
+identity and authentication; a remote-name registry would duplicate its
+configuration (F5, P4). Commands
 never install software or change host trust (P7, P15).
 
 **Consequences.**

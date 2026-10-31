@@ -1,10 +1,13 @@
 # Remote hosts
 
 Run any execution command on another host with `--remote`. brnr uses the
-installed OpenSSH client; the remote host needs a matching brnr version,
+`ssh` on the caller's PATH; the remote host needs a matching brnr version,
 with remote support, on its shell's PATH, and its own agents, adapters and
 provider credentials. Establish authentication and host trust with SSH
-first:
+first. Command rules do not secure this executable lookup: a planted `ssh`
+can run local code without network access or SSH keys. See
+[restricted agents](agents.md#brnr-from-a-restricted-agent).
+
 
 ```sh
 ssh agent@linux

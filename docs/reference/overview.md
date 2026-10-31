@@ -80,7 +80,8 @@ All execution commands, including `acp`, `doctor`, `skill` and `--version`,
 accept `--remote <[user@]host>` before `--`, the one transport: without it,
 no command but `remote check` connects to another machine through brnr's
 transport. SSH resolves aliases, usernames, ports and keys. A profile is
-loaded where the command runs: with `--remote`, local brnr config isn't read, and `--profile` names a profile on the destination,
+loaded where the command runs: with `--remote`, local brnr config isn't
+read, and `--profile` names a profile on the destination,
 for every command that takes it. brnr is the `brnr` on the remote shell's
 PATH, with that shell's environment. A second hop is refused.
 
@@ -321,7 +322,7 @@ log, event watch and session new --foreground. --strict is stable ACP only: no -
 running turn, no session fork.
 Execution commands accept --remote <[user@]host> before --: execute over SSH, with brnr on
 the remote shell's PATH. Without --remote, no command but remote check connects to another
-machine.
+machine through brnr's transport.
 A profile is loaded on the machine that runs the command: with --remote, --profile <p> is the
 destination's, and local brnr config isn't read. SSH uses existing host trust and keys.
 Remote paths and event notify commands are on the destination. See brnr remote --help.

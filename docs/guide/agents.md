@@ -81,10 +81,12 @@ answers.** In the agent's own command rules (Claude Code's
 session new`, `session resume`, `session fork`, `session delete`, `prompt
 send`, `permission allow`, `elicitation accept`, `config set`, `event notify`
 and `brnr acp`. If the policy means no program starts, also deny `brnr
-doctor` and `brnr remote check` whole, or explicitly scope an exception
-to trusted executables and destinations. Even without `--fix`, doctor
-runs adapter `--version` probes resolved beside brnr or on PATH; that
-argument does not constrain what the selected executable can do.
+doctor` and `brnr remote check` whole. Even without `--fix`, doctor runs
+the three `brnr-*-adapter` programs and non-npm `muse-acp` with `--version`,
+resolved beside brnr or on the caller's PATH; the other npm adapters are
+identified from `package.json`. That argument does not constrain what the
+selected executable can do.
+
 `remote check` starts system SSH and the destination's doctor, including
 its adapter probes. Deny `session list` whole: with `--` or `--profile`, it
 starts an agent. `session resume` and `session delete` start the one
@@ -105,13 +107,16 @@ Safer is to allow only the verbs that read and observe: `session status`,
 `elicitation requests` and `show`, and `config get`. This list has no
 session-listing verb, so the agent gets session ids from whoever started
 the sessions, or from `permission requests` / `elicitation requests`. A
-short allow list limits the verbs, but does not keep their reads local.
+short allow list limits the verbs, but does not keep their reads local
+or prevent program starts: every `--remote` invocation runs `ssh` from the
+caller's PATH, even on these read verbs. If the agent can plant an
+executable on that PATH, it can run its own program this way.
 
 The allowed read verbs also take `--remote <host>` and read session state
 on every destination the user's SSH reaches. Without `--remote`, no
-command but `remote check` connects: it runs `ssh <target> brnr doctor`,
-with a version preflight. It requests diagnostics without `--fix`, but
-executed adapters can have side effects. `--remote` can come anywhere
+command but `remote check` connects through brnr's transport: it runs
+`ssh <target> brnr doctor`, with a version preflight. It requests
+diagnostics without `--fix`, but executed adapters can have side effects. `--remote` can come anywhere
 among a verb's arguments, so a prefix rule can't exclude it. In Claude
 Code, add `Bash(brnr * --remote *)` to `permissions.deny`: its
 [wildcard rules](https://code.claude.com/docs/en/permissions#wildcard-patterns)
@@ -119,7 +124,13 @@ support `*` in the middle, so this matches both `brnr session status s
 --remote h` and `brnr session status --remote h s`. Codex's prefix rules
 can't express that exclusion. The Claude Code rule is best effort against
 an agent trying to evade it: quoting, an absolute path or `env brnr` can
-change the command text it matches. What holds is an OS sandbox without
-network access or without `ssh`, or no SSH keys the agent can use: brnr
-executes the system `ssh`. A deny list must cover every spelling of a
-command; an allow list still needs these limits on remote reads.
+change the command text it matches. An OS sandbox without network access
+can prevent remote reads; withholding SSH keys can restrict authenticated
+access. Neither prevents a planted `ssh` from running local code: that
+program needs no network or keys, and removing an installed SSH client
+does not prevent planting one. Trusting the selected programs requires a
+fixed PATH and environment enforced outside the agent's control, with no
+executables it can write in the lookup locations, including beside brnr.
+An OS sandbox can enforce these limits; command rules alone cannot. A deny
+list must cover every spelling of a command; an allow list still needs
+these limits on remote reads and program starts.

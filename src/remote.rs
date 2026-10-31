@@ -9,7 +9,8 @@ use crate::error::{Code, Error};
 use crate::{ctl, paths};
 
 /// None leaves a local command to its existing parser and implementation:
-/// without `--remote`, nothing connects to another machine (ADR 12.2).
+/// without `--remote`, only `remote check` connects through brnr's
+/// transport (ADR 12.2).
 pub(crate) fn dispatch(args: &[OsString], received: bool) -> Option<ExitCode> {
     let words: Vec<String> =
         args.iter().map(|s| s.to_str().map(str::to_owned)).collect::<Option<_>>()?;

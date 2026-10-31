@@ -40,9 +40,14 @@ brnr's own conventions:
   starts SSH and remote doctor. ADR 12 names the remote-check exception
   to `--remote` routing; the CLI help and reference do too. The guide
   also names bare `skill install` as writing to default skill directories.
-  Claude Code's wildcard deny rule
-  for remote reads is best effort; what holds is a sandbox without network
-  or `ssh`, or no usable SSH keys. Codex's prefix rules cannot exclude
+  Claude Code's wildcard deny rule for remote reads is best effort.
+  Network and key restrictions limit remote access but do not prevent local
+  execution of a planted adapter or `ssh`: doctor and every `--remote`
+  invocation resolve programs using the caller's PATH. Trusting lookup
+  requires a fixed PATH and environment outside the agent's control, with
+  no executables it can write in lookup locations. The docs distinguish
+  executable probes from npm-manifest reads; help and comments limit
+  connection claims to brnr's transport. Codex's prefix rules cannot exclude
   `--remote` at every argument position. The skill's rule 4 says it isn't
   enforced, and SECURITY.md links the section (ADR 1, N1 and P13; ADR 7.1;
   ADR 12.1–12.2).
@@ -55,8 +60,9 @@ brnr's own conventions:
 - Muse Code through `brnr-muse-adapter`, built from pinned upstream Rust source; adapter discovery and version reporting, ACP v1 checks, Dependabot and canary coverage (ADR 11.1–11.3).
 - Execute commands over system SSH with `--remote <[user@]host>`,
   including ACP, session control and event streams. `--remote` is the only
-  transport: without it, nothing connects to another machine. A profile is
-  read on the machine that runs the command, so with `--remote`,
+  transport: without it, no command but `remote check` connects through
+  brnr's transport. A profile is read on the machine that runs the command,
+  so with `--remote`,
   `--profile` is the destination's. The destination's brnr is the one on
   its shell's PATH; without one the command fails with
   `remote_brnr_not_found`, which says where to set the PATH, and another

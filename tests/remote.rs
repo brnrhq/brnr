@@ -107,7 +107,7 @@ fn adr_0012_remote_sessions_stdin_and_json_use_the_destination() {
     assert_eq!(s.arguments()[0][5], "linux");
 }
 
-/// Without `--remote`, `--profile` is a local profile and nothing connects:
+/// Without `--remote`, `--profile` is local and selects no SSH routing:
 /// a local start stays local, and a verb that takes no `--profile` refuses it.
 #[test]
 fn adr_0012_profile_without_remote_never_connects() {
@@ -322,7 +322,7 @@ fn adr_0012_direct_user_destinations_use_remote_path_without_initialisation() {
 }
 
 /// A profile's `remote` table is gone: it is an unknown key, which fails to
-/// load, and doctor names it; nothing connects.
+/// load, and doctor names it; it selects no SSH routing.
 #[test]
 fn adr_0012_a_remote_table_fails_to_load_and_doctor_names_it() {
     let s = Setup::new("remote-table");

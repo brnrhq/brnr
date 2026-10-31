@@ -2,8 +2,10 @@
 
 Check an SSH destination's brnr by starting system SSH and running the
 destination's doctor, including its adapter `--version` probes. It writes
-no local configuration. The group does not accept `--remote`; help stays
-local.
+no local configuration. System SSH is the `ssh` on the caller's PATH; a
+planted executable can run local code without network access or SSH keys.
+See [restricted agents](../guide/agents.md#brnr-from-a-restricted-agent).
+The group does not accept `--remote`; help stays local.
 
 ## `brnr remote check`
 

@@ -195,7 +195,7 @@ log, event watch and session new --foreground. --strict is stable ACP only: no -
 running turn, no session fork.
 Execution commands accept --remote <[user@]host> before --: execute over SSH, with brnr on
 the remote shell's PATH. Without --remote, no command but remote check connects to another
-machine.
+machine through brnr's transport.
 A profile is loaded on the machine that runs the command: with --remote, --profile <p> is the
 destination's, and local brnr config isn't read. SSH uses existing host trust and keys.
 Remote paths and event notify commands are on the destination. See brnr remote --help.";

@@ -58,9 +58,13 @@ brnr keeps it so, the test for each claim, and the known gaps.
   started. brnr is not a permission boundary between an agent and the
   agents it starts; [brnr from a restricted agent](docs/guide/agents.md#brnr-from-a-restricted-agent)
   says which boundaries hold, and how to set them. Even without `--fix`,
-  `doctor` runs adapter `--version` probes resolved beside brnr or on PATH;
-  `remote check` starts system SSH and the destination's doctor, including
-  its probes. Diagnostic arguments do not guarantee side-effect-free
-  executables. Deny both commands whole when the policy forbids program
-  starts, or explicitly scope an exception to trusted executables and
-  destinations.
+  `doctor` runs the three `brnr-*-adapter` programs and non-npm `muse-acp`
+  with `--version`, resolved beside brnr or on the caller's PATH; the other
+  npm adapters are identified from `package.json`. `remote check` and every
+  `--remote` command, including read verbs, run `ssh` from the caller's
+  PATH. A planted executable needs no network or SSH keys to run local
+  code. Diagnostic arguments do not constrain it. Deny `doctor` and
+  `remote check` whole when program starts are forbidden, and account for
+  `--remote` on allowed verbs. Command rules alone do not secure executable
+  lookup; that requires a fixed PATH and environment enforced outside the
+  agent's control, with no executables it can write in lookup locations.
