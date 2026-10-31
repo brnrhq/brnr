@@ -26,6 +26,8 @@ brnr's own conventions:
 
 ### Added
 
+- A real-editor check matrix and manual checklists for Zed and IntelliJ
+  with AIR, with every result untested (ADR 2.7, ADR 7.1; #216, #217).
 - The documentation says that brnr is not a permission boundary between an
   agent and the agents it starts, and which boundaries hold: the
   threat model's Actors and Gaps name the paths (a start in a mode that asks
