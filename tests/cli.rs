@@ -6792,16 +6792,28 @@ fn adr_0008_purge_deletes_an_older_brnrs_files_too() {
     let purged: Vec<&str> =
         out["purged"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
     // In each folder, an older brnr's set aside, then the raw ACP, then the
-    // events file.
-    let want = [
-        before_hash.with_extension("acp.jsonl"),
-        before_hash.clone(),
-        folder.join("old-1.older.acp.jsonl"),
-        aside,
-        older.with_extension("acp.jsonl"),
-        older.clone(),
+    // events file. Folder groups follow purge's sort of the folder names.
+    let mut groups = [
+        (
+            before_hash.parent().unwrap().file_name().unwrap().to_owned(),
+            vec![before_hash.with_extension("acp.jsonl"), before_hash.clone()],
+        ),
+        (
+            folder.file_name().unwrap().to_owned(),
+            vec![
+                folder.join("old-1.older.acp.jsonl"),
+                aside,
+                older.with_extension("acp.jsonl"),
+                older.clone(),
+            ],
+        ),
     ];
-    let want: Vec<String> = want.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    groups.sort_by(|a, b| a.0.cmp(&b.0));
+    let want: Vec<String> = groups
+        .into_iter()
+        .flat_map(|(_, paths)| paths)
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
     assert_eq!(purged, want, "{out}");
     assert_eq!(out["failed"], json!([]), "{out}");
     assert_eq!(transcript_files(&env), ["old-10.jsonl"]);
