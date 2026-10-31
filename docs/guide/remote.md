@@ -4,10 +4,10 @@ Run any execution command on another host with `--remote`. brnr uses the
 `ssh` on the caller's PATH; the remote host needs a matching brnr version,
 with remote support, on its shell's PATH, and its own agents, adapters and
 provider credentials. Establish authentication and host trust with SSH
-first. Command rules do not secure this executable lookup: a planted `ssh`
-can run local code without network access or SSH keys. See
-[restricted agents](agents.md#brnr-from-a-restricted-agent).
-
+first. Command rules cannot make these program starts safe: their choice
+and behavior depend on the caller's environment and files. See the
+[program-starting Gap](../threat-model.md#program-starts) and
+[OS sandbox](agents.md#an-os-sandbox).
 
 ```sh
 ssh agent@linux

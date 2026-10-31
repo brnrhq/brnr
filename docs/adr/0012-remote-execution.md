@@ -13,9 +13,10 @@ keys, jump hosts and connection sharing belong in SSH configuration.
 
 System `ssh` means the executable named `ssh` on the caller's PATH, not a
 pinned path. This applies to every `--remote` command and `remote check`,
-including read verbs. Command rules do not secure that lookup; an agent
-that can plant `ssh` on its PATH can run local code without network access
-or SSH keys (see the [threat model](../threat-model.md#gaps)).
+including read verbs. The SSH client reads its own configuration, which
+can also request local commands. Command rules cannot make these starts
+safe: program choice and behavior depend on the caller's environment and
+files. See the [program-starting Gap](../threat-model.md#program-starts).
 
 The sequence is:
 
@@ -124,8 +125,8 @@ exit status are doctor's interface. Checks neither write local config nor
 create a missing config file or directory. Local `doctor` checks local
 profiles only, and does not use SSH. Even without `--fix`, doctor runs
 the three `brnr-*-adapter` programs and non-npm `muse-acp` with `--version`,
-resolved beside brnr or on the caller's PATH; it reads npm adapters'
-versions from `package.json`. These are program starts, not a guarantee
+resolved using adapter lookup (ADR 11.2); it reads npm adapters' versions
+from `package.json`. These are program starts, not a guarantee
 that the selected adapters have no side effects; `remote check` starts SSH
 and runs those probes remotely.
 

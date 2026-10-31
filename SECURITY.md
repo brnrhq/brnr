@@ -57,14 +57,14 @@ brnr keeps it so, the test for each claim, and the known gaps.
   user, start an agent that asks nothing, and answer the approvals of one it
   started. brnr is not a permission boundary between an agent and the
   agents it starts; [brnr from a restricted agent](docs/guide/agents.md#brnr-from-a-restricted-agent)
-  says which boundaries hold, and how to set them. Even without `--fix`,
-  `doctor` runs the three `brnr-*-adapter` programs and non-npm `muse-acp`
-  with `--version`, resolved beside brnr or on the caller's PATH; the other
-  npm adapters are identified from `package.json`. `remote check` and every
-  `--remote` command, including read verbs, run `ssh` from the caller's
-  PATH. A planted executable needs no network or SSH keys to run local
-  code. Diagnostic arguments do not constrain it. Deny `doctor` and
-  `remote check` whole when program starts are forbidden, and account for
-  `--remote` on allowed verbs. Command rules alone do not secure executable
-  lookup; that requires a fixed PATH and environment enforced outside the
-  agent's control, with no executables it can write in lookup locations.
+  says which boundaries hold, and how to set them. Command rules cannot
+  make `doctor`, `remote check` or any `--remote` command safe: they start
+  programs whose choice and behavior depend on the caller's environment
+  and files. A deny-list policy must deny these paths whole, including
+  `--remote` on allowed read verbs. The threat model's
+  [program-starting Gap](docs/threat-model.md#program-starts) gives known
+  examples, not an exhaustive list. What holds is an
+  [OS sandbox](docs/guide/agents.md#an-os-sandbox) that keeps the agent from
+  writing executables or brnr symlinks anywhere it can run them from, and
+  from writing SSH configuration. Those restrictions are not a complete
+  sandbox policy.

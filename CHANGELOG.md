@@ -35,19 +35,23 @@ brnr's own conventions:
   says how to set Claude Code's managed settings, Codex's managed
   requirements, a sandbox and command rules: deny `brnr host`,
   `brnr _remote` and `session list` whole, and deny `doctor` and
-  `remote check` whole when no program starts are allowed: even without
+  `remote check` whole: even without
   `--fix`, adapter version probes execute programs, and `remote check`
   starts SSH and remote doctor. ADR 12 names the remote-check exception
   to `--remote` routing; the CLI help and reference do too. The guide
   also names bare `skill install` as writing to default skill directories.
   Claude Code's wildcard deny rule for remote reads is best effort.
-  Network and key restrictions limit remote access but do not prevent local
-  execution of a planted adapter or `ssh`: doctor and every `--remote`
-  invocation resolve programs using the caller's PATH. Trusting lookup
-  requires a fixed PATH and environment outside the agent's control, with
-  no executables it can write in lookup locations. The docs distinguish
-  executable probes from npm-manifest reads; help and comments limit
-  connection claims to brnr's transport. Codex's prefix rules cannot exclude
+  Command rules cannot make `doctor`, `remote check` or any `--remote`
+  command safe: program choice and behavior depend on the caller's
+  environment and files. A deny-list policy must deny these paths whole.
+  The threat model's [Gap](docs/threat-model.md#program-starts) gives known
+  examples rather than a complete list; what holds is the
+  [OS sandbox](docs/guide/agents.md#an-os-sandbox). It keeps the agent from
+  writing executables or brnr symlinks anywhere it can run them from, and
+  from writing SSH configuration; these are not a complete sandbox policy.
+  The docs distinguish executable probes from npm-manifest reads; help
+  and comments limit connection claims to brnr's transport. Codex's
+  prefix rules cannot exclude
   `--remote` at every argument position. The skill's rule 4 says it isn't
   enforced, and SECURITY.md links the section (ADR 1, N1 and P13; ADR 7.1;
   ADR 12.1–12.2).

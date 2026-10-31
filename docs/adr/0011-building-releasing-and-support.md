@@ -79,8 +79,11 @@ prebuilt adapters.
 - A bare agent name (no `/`) is looked for next to brnr first, then on
   PATH, so an editor's PATH needn't include Homebrew's. "Next to brnr" is
   the running binary's directory, and the directory of the path brnr was
-  started by (`argv[0]`, when it is a path). Homebrew links `bin/brnr` and
-  the adapters into its prefix's `bin`. On macOS the running binary's path
+  started by (`argv[0]`, when it is a path). That directory is the
+  caller's choice: a symlink or chosen `argv[0]` can select it; see the
+  [program-starting Gap](../threat-model.md#program-starts).
+  Homebrew links `bin/brnr` and the adapters into its prefix's `bin`.
+  On macOS the running binary's path
   is the link's, so an adapter next to the link is found. On Linux it is
   the link's target in the Cellar, where the adapters aren't.
 - `brnr session new`, `brnr session resume` and `brnr acp`, started by that

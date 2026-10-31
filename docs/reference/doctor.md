@@ -9,8 +9,10 @@ this brnr doesn't read.
 
 Even without `--fix`, doctor runs `brnr-claude-adapter`,
 `brnr-codex-adapter` and `brnr-muse-adapter` with `--version`, and
-`muse-acp` when no npm package identifies it. It resolves these beside brnr
-or on the caller's PATH. It reads `package.json` for `claude-agent-acp`,
+`muse-acp` when no npm package identifies it. It uses adapter lookup
+(ADR 11.2), whose caller-chosen inputs are described in the
+[program-starting Gap](../threat-model.md#program-starts). It reads
+`package.json` for `claude-agent-acp`,
 `codex-acp` and npm `muse-acp` without running them. These probes do not
 constrain what the selected executable can do. See
 [doctor](../guide/doctor.md).
