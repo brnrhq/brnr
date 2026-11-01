@@ -30,6 +30,21 @@ notes = "brnr is this workspace's first-party code, even after its version is pu
 version = "1.10.2"
 criteria = "safe-to-deploy"
 
+[[exemptions.android_system_properties]]
+version = "0.1.6"
+criteria = "safe-to-deploy"
+notes = "Automated review (GPT-6) of the complete 0.1.5 -> 0.1.6 delta and its callback caller; not a person's audit: The callback now has the C ABI, receives a pointer to a live Option<String>, returns None for invalid UTF-8 and uses the actual void-returning read_callback signature from Android bionic sys/system_properties.h. The result stays alive for the synchronous callback call; existing CStr/dynamic-library boundaries are unchanged. The old getter only gains a safety comment. Metadata changes add no build script. Header checked at https://android.googlesource.com/platform/bionic/+/4782b4e08510d709a0e2867fc86c2f99ca776490/libc/include/sys/system_properties.h ."
+
+[[exemptions.anyhow]]
+version = "1.0.104"
+criteria = "safe-to-deploy"
+notes = "Automated review (GPT-6) of the 1.0.103 -> 1.0.104 delta; not a person's audit: Only the package/doc version and a dev-only syn dependency change; deployed source and build.rs are unchanged."
+
+[[exemptions.autocfg]]
+version = "1.5.1"
+criteria = "safe-to-deploy"
+notes = "Automated review (GPT-6) of the 1.5.0 -> 1.5.1 delta; not a person's audit: Library code is unchanged. The shell-based no-op compiler-wrapper test is replaced by the harness-free Rust test executable, which only emits a fake version or drains stdin. Package metadata and README follow the test change; no new build-time or deployed behavior."
+
 [[exemptions.base64]]
 version = "0.23.1"
 criteria = "safe-to-deploy"
@@ -41,6 +56,11 @@ criteria = "safe-to-deploy"
 [[exemptions.cc]]
 version = "1.6.0"
 criteria = "safe-to-deploy"
+
+[[exemptions.cfg-if]]
+version = "1.0.5"
+criteria = "safe-to-deploy"
+notes = "Automated review (GPT-6) of the 1.0.4 -> 1.0.5 delta; not a person's audit: The macro implementation is unchanged. Changes are deprecation documentation, version metadata and upstream CI action versions; no new executable build or runtime code."
 
 [[exemptions.chrono]]
 version = "0.4.45"
@@ -57,6 +77,11 @@ criteria = "safe-to-deploy"
 [[exemptions.darling_core]]
 version = "0.24.1"
 criteria = "safe-to-deploy"
+
+[[exemptions.darling_macro]]
+version = "0.24.1"
+criteria = "safe-to-deploy"
+notes = "Automated review (GPT-6) of version 0.24.1; not a person's audit: Reviewed all packaged executable source and both manifests. The only source file exposes six derive entry points that parse compiler-supplied tokens through syn and delegate to the matching darling_core derive function, plus a removed-API entry point returning a fixed diagnostic. No build script, unsafe code, filesystem/network access, or process execution. This review covers the wrapper, not its dependencies; darling_core and syn remain separately exempted."
 
 [[exemptions.defmt]]
 version = "1.1.1"
@@ -106,6 +131,16 @@ criteria = "safe-to-deploy"
 version = "1.9.3"
 criteria = "safe-to-deploy"
 
+[[exemptions.indexmap]]
+version = "2.14.2"
+criteria = "safe-to-deploy"
+notes = "Automated review (GPT-6) of the 2.14.0 -> 2.14.2 delta; not a person's audit: Reviewed the compiled source and manifest delta against the imported audited version. Both disjoint mutable-access helpers validate all bounds and duplicate indices before deriving references from the exclusive slice pointer; no mutation occurs between checks and pointer use. Optional missing keys produce None. Bucket projections split distinct key/value fields. Index operations retain explicit checked bounds; same-key equality uses Eq. Empty-map macros use the existing safe const constructor. No new ambient I/O. Dependencies require separate coverage."
+
+[[exemptions.itoa]]
+version = "1.0.18"
+criteria = "safe-to-deploy"
+notes = "Automated review (Claude Opus 5.5) of version 1.0.18; not a person's audit: Read all packaged src/ files (lib.rs, u128_ext.rs) and the manifest; no build script, no_std, no default dependencies. Unsafe code is unchecked DECIMAL_PAIRS indexing, a cast of the 40-byte buffer to the sealed per-type array and from_utf8_unchecked on the written tail. Pair indices stay below 100 because every divmod100 input is below 10000, including the 1e16 split of u128, whose multiply-shift constant was checked to give an exact quotient for every u128 (M*1e16 - 2^179 < 2^51). The written region is contiguous, every write is bounds-checked, and it holds only ASCII digits and '-'. No filesystem, network, process, env, FFI or asm."
+
 [[exemptions.jiff]]
 version = "0.2.38"
 criteria = "safe-to-deploy"
@@ -122,13 +157,19 @@ criteria = "safe-to-deploy"
 version = "0.1.9"
 criteria = "safe-to-deploy"
 
+[[exemptions.jiff-tzdb-platform]]
+version = "0.1.3"
+criteria = "safe-to-deploy"
+notes = "Automated review (GPT-6) of version 0.1.3; not a person's audit: Reviewed all packaged executable source and both manifests. The no_std library only publicly re-exports jiff_tzdb, with no build script, other modules, unsafe code, or I/O. Platform selection is controlled by the caller. This review does not audit the re-exported time-zone database dependency, which remains separately exempted."
+
 [[exemptions.js-sys]]
 version = "0.3.106"
 criteria = "safe-to-deploy"
 
 [[exemptions.libc]]
-version = "0.2.189"
+version = "0.2.190"
 criteria = "safe-to-deploy"
+notes = "Automated review (Claude Opus 5.5) of the 0.2.189 -> 0.2.190 delta; not a person's audit: reading line by line the files compiled for x86_64/aarch64 Linux GNU and macOS and the executable code on other targets. build.rs runs no new commands; the FreeBSD, Emscripten and VxWorks version probes now run only on those targets, and cfgs come from an enum checked against the target. linux_time_bits64 is now also set on 64-bit Linux, where the only item it gates (input_event) keeps the same fields. New s2!/s_no_extra_traits2! macros add Default impls and a trailing private unit field (repr(C) size unchanged); a zeroed Default is opt-in for five unions of integers, raw pointers and C structs, all valid as zero. The new cstr helper is only applied to static NUL-terminated byte literals. On glibc, sigaction, siginfo_t, statvfs, the signal numbers, SA_*, SOCK_* and SO_* move into new modules; checked against glibc bits/sigaction.h, signum-arch.h, signum-generic.h, types/siginfo_t.h, statvfs.h, socket_type.h and Linux asm-generic/socket.h: values and 64-bit layouts are unchanged (siginfo_t 128 bytes with explicit __pad0; statvfs gains f_type from spare). siginfo_t accessors are unsafe union reads. NLMSG_* helpers match linux/netlink.h and use wrapping pointer arithmetic. FD_* now panic with a message on out-of-range fds, as indexing did. New Apple declarations (lchmod, lchflags, minherit, posix_spawn_file_actions_add(f)chdir(_np), pack(4) group_req, MCAST_*, VM_INHERIT_*) match XNU sys/stat.h, sys/mman.h, netinet/in.h, mach/vm_inherit.h and spawn.h. The rest is declarations for other targets (new HelenOS port), removal of long-deprecated items, Padding for private fields, docs, and an include list that drops repository files from the package. No new link attributes, inline asm, ambient I/O or dependencies."
 
 [[exemptions.log]]
 version = "0.4.34"
@@ -154,6 +195,16 @@ criteria = "safe-to-deploy"
 version = "0.2.8"
 criteria = "safe-to-deploy"
 
+[[exemptions.powerfmt]]
+version = "0.2.1"
+criteria = "safe-to-deploy"
+notes = "Automated review (GPT-6) of the 0.2.0 -> 0.2.1 delta; not a person's audit: Reviewed the complete source and manifest delta and the surrounding WriteBuffer implementation. Its private length starts at zero and advances only after a checked destination slice has been filled with complete UTF-8 input. The new unchecked prefix and raw slice conversions therefore cover initialized bytes with the original lifetime and alignment; the mutable conversion follows a full copy of Copy elements. Array initialization removes an unsafe helper. The alternate formatting macro now calls the boolean alternate setter instead of width. Other changes are inline annotations, docs cfg, lints and MSRV. No build script or new I/O; the optional macro dependency requires separate coverage."
+
+[[exemptions.proc-macro2]]
+version = "1.0.107"
+criteria = "safe-to-deploy"
+notes = "Automated review (GPT-6) of the 1.0.106 -> 1.0.107 delta; not a person's audit: map_or(false, predicate) becomes is_some_and(predicate); the fallback span invalidation call moves past an if whose other branch always panics, preserving its guard. Runtime unsafe code and the build script are unchanged. Remaining changes raise MSRV to 1.71 and update docs/CI/lints."
+
 [[exemptions.ref-cast]]
 version = "1.0.27"
 criteria = "safe-to-deploy"
@@ -162,9 +213,29 @@ criteria = "safe-to-deploy"
 version = "1.0.27"
 criteria = "safe-to-deploy"
 
+[[exemptions.rustversion]]
+version = "1.0.23"
+criteria = "safe-to-deploy"
+notes = "Automated review (GPT-6) of the complete 1.0.22 -> 1.0.23 delta and the surrounding build script; not a person's audit: The only new executable behavior sets RUSTVERSION=1 on the existing rustc/wrapper --version child command. It does not change the selected executable, arguments, version parsing or OUT_DIR writes. Remaining changes are metadata, lint and upstream CI updates."
+
 [[exemptions.schemars]]
 version = "1.2.2"
 criteria = "safe-to-deploy"
+
+[[exemptions.serde]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = "Automated review (GPT-6) of the 1.0.228 -> 1.0.229 delta; not a person's audit: The sequence visitor reborrows its existing mutable collection, as in the separately reviewed serde_core delta. The pinned core dependency and minimum derive compiler cfg are updated; the never_type feature gate is restricted to docsrs. Other changes are docs/lints. No new unsafe code or ambient capabilities. Dependency coverage is required separately."
+
+[[exemptions.serde_core]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = "Automated review (GPT-6) of the 1.0.228 -> 1.0.229 delta; not a person's audit: Sequence deserialization reborrows the same mutable collection through &mut *self.0, preserving clear/reserve/insert behavior and cautious size hints. Build cfg only raises the derive compiler threshold to 1.71; remaining changes are version/lint metadata. No new unsafe code or ambient capabilities."
+
+[[exemptions.serde_derive]]
+version = "1.0.229"
+criteria = "safe-to-deploy"
+notes = "Automated review (GPT-6) of the 1.0.228 -> 1.0.229 delta; not a person's audit: Reviewed the source and manifest delta against the imported audited version. The syn 3 migration supplies the new AST fields and preserves generated trait bounds, field numbering and error propagation. Iterator rewrites preserve filtering and order; field_i is shared without changing its generated identifier. No new unsafe code or ambient I/O. Dependencies require separate coverage."
 
 [[exemptions.serde_json]]
 version = "1.0.151"
@@ -181,6 +252,16 @@ criteria = "safe-to-deploy"
 [[exemptions.slab]]
 version = "0.4.12"
 criteria = "safe-to-deploy"
+
+[[exemptions.strum]]
+version = "0.28.0"
+criteria = "safe-to-deploy"
+notes = "Automated review (GPT-6) of the 0.27.2 -> 0.28.0 delta; not a person's audit: ParseError Display uses core::fmt and is available without std; its fixed message is unchanged. Other source changes are documentation. Optional phf/strum_macros versions and MSRV are updated; dependencies require their own coverage. No new unsafe code, filesystem access or process execution."
+
+[[exemptions.strum_macros]]
+version = "0.28.0"
+criteria = "safe-to-deploy"
+notes = "Automated review (GPT-6) of the 0.27.2 -> 0.28.0 delta; not a person's audit: Reviewed the compiled source and manifest delta against the imported audited version. Discriminant attributes remain compile-time supplied metadata; default variants receive the corresponding Default derive. String conversion generates safe match/default construction, with explicit custom-error validation and the existing PHF fallback. Iterator traits are core-qualified; character classification uses ASCII digits. No new unsafe code or ambient I/O. Dependencies require separate coverage."
 
 [[exemptions.syn]]
 version = "2.0.119"
@@ -218,6 +299,11 @@ notes = "Not certified: with default features, a valid 12.8 KB document of 79 ne
 [[exemptions.toml_parser]]
 version = "1.1.3+spec-1.1.0"
 criteria = "safe-to-deploy"
+
+[[exemptions.toml_writer]]
+version = "1.1.2+spec-1.1.0"
+criteria = "safe-to-deploy"
+notes = "Automated review (GPT-6) of the complete 1.1.1+spec-1.1.0 -> 1.1.2+spec-1.1.0 delta and string metrics; not a person's audit: Quote-run counters now use Saturating<u8>, preventing overflow on long runs while preserving delimiter decisions. No unsafe code or new I/O; remaining changes are package include patterns, lint and version metadata."
 
 [[exemptions.unicode-ident]]
 version = "1.0.26"
@@ -262,3 +348,8 @@ criteria = "safe-to-deploy"
 [[exemptions.winnow]]
 version = "1.0.4"
 criteria = "safe-to-deploy"
+
+[[exemptions.zmij]]
+version = "1.0.23"
+criteria = "safe-to-deploy"
+notes = "Automated review (Claude Opus 5.5) of version 1.0.23; not a person's audit: Read all packaged src/ files (lib.rs, traits.rs, stdarch_x86.rs, cfg(test) tests.rs), build.rs and the manifest; no_std, no default dependencies. Unsafe code is unchecked indexing into const-built power-of-10, exponent-shift, exponent-string and shuffle tables, raw-pointer writes into a 24-byte stack buffer followed by from_utf8_unchecked, SSE2/SSE4.1/NEON intrinsics gated by compile-time target_feature cfgs, and empty-comment asm! optimizer barriers. Index ranges were derived for every f32/f64 bit pattern, including NaN/inf passed to format_finite and subnormals; the largest write ends exactly at byte 24, and the digit arithmetic only produces bytes 0-9, so the output is ASCII. Aligned SIMD loads read u128 fields at 16-byte multiples of an align(64) struct. build.rs only runs `$RUSTC --version` and reads OPT_LEVEL to emit cfgs. No filesystem, network, env or FFI in the library."
