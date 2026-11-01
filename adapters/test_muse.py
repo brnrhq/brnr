@@ -11,27 +11,32 @@ from unittest.mock import patch
 import muse
 
 
+def _legacy_source(root, version):
+    source = root / "source"
+    (source / "src").mkdir(parents=True)
+    msp = source / "crates/muse-msp-client"
+    (msp / "src").mkdir(parents=True)
+    (source / "Cargo.toml").write_text(
+        f'[package]\nname="muse-acp"\nversion="{version}"\n'
+        'edition="2024"\nrust-version="1.88"\nlicense="Apache-2.0"\n'
+        '[dependencies]\nmuse-msp-client={path="crates/muse-msp-client"}\n'
+    )
+    (msp / "Cargo.toml").write_text(
+        '[package]\nname="muse-msp-client"\nversion="0.1.0"\n'
+        'edition="2024"\nrust-version="1.88"\nlicense="Apache-2.0"\n[dependencies]\n'
+    )
+    (msp / "src/lib.rs").write_text('pub fn ready() -> &\'static str { "ready" }\n')
+    for name in ("LICENSE", "NOTICE"):
+        (source / name).write_text(name)
+    return source
+
+
 class SourceBuild(unittest.TestCase):
     def test_builds_offline_and_replaces_a_running_binary_atomically(self):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
-            source = root / "source"
-            (source / "src").mkdir(parents=True)
-            msp = source / "crates/muse-msp-client"
-            (msp / "src").mkdir(parents=True)
             version = muse.pinned_version()
-            (source / "Cargo.toml").write_text(
-                f'[package]\nname="muse-acp"\nversion="{version}"\n'
-                'edition="2024"\nrust-version="1.88"\nlicense="Apache-2.0"\n'
-                '[dependencies]\nmuse-msp-client={path="crates/muse-msp-client"}\n'
-            )
-            (msp / "Cargo.toml").write_text(
-                '[package]\nname="muse-msp-client"\nversion="0.1.0"\n'
-                'edition="2024"\nrust-version="1.88"\nlicense="Apache-2.0"\n[dependencies]\n'
-            )
-            (msp / "src/lib.rs").write_text('pub fn ready() -> &\'static str { "ready" }\n')
-            for name in ("LICENSE", "NOTICE"):
-                (source / name).write_text(name)
+            source = _legacy_source(root, version)
             code = """use std::io::{self, Write};
 fn main() {
     if std::env::args().nth(1).as_deref() == Some("--version") {
@@ -81,6 +86,27 @@ fn main() {
                     manifest.write('unexpected="1"\n')
                 with self.assertRaisesRegex(ValueError, "dependencies changed"):
                     muse.build(out, source)
+
+    def test_guard_rejects_a_set_that_differs_from_the_accepted_ones(self):
+        # Break-on-purpose: an otherwise plausible graph that is neither the
+        # legacy nor the reviewed set must still fail the exact-equality guard.
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            version = muse.pinned_version()
+            source = _legacy_source(root, version)
+            (source / "src/main.rs").write_text("fn main() {}\n")
+            (source / "Cargo.toml").write_text(
+                f'[package]\nname="muse-acp"\nversion="{version}"\n'
+                'edition="2024"\nrust-version="1.88"\nlicense="Apache-2.0"\n'
+                "[dependencies]\n"
+                'muse-msp-client={path="crates/muse-msp-client"}\n'
+                'serde_json={version="1"}\n'
+            )
+            with (
+                patch.dict(os.environ, {"CARGO_HOME": str(root / "cargo")}),
+                self.assertRaisesRegex(ValueError, "dependencies changed"),
+            ):
+                muse.build(root / "out", source)
 
 
 if __name__ == "__main__":
