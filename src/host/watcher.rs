@@ -7,6 +7,11 @@ use std::process::Command;
 
 use crate::sys;
 
+/// Room for fds `Command::spawn` opens after [`attach`] scans (stdio pipes in
+/// the parent, std's exec-error pipe in the child). Far below any soft
+/// `RLIMIT_NOFILE` that would make a `_SC_OPEN_MAX` loop expensive.
+const SPAWN_FD_MARGIN: i32 = 32;
+
 /// Double-forked before the agent execs, in its group: the watcher pins that group
 /// even if the host dies and the agent is reaped. It signals only its own
 /// group, never an id recovered from metadata. The host alone keeps the
@@ -15,7 +20,10 @@ use crate::sys;
 pub(super) fn attach(cmd: &mut Command) -> io::Result<PipeWriter> {
     let (reader, writer) = io::pipe()?;
     let fd = reader.as_raw_fd();
-    let limit = sys::open_max()?;
+    // Bound by fds open now, not RLIMIT_NOFILE / _SC_OPEN_MAX. Scan here in
+    // the host (malloc/readdir are fine); the watcher only closes.
+    let through =
+        sys::highest_open_fd()?.max(fd).max(writer.as_raw_fd()).saturating_add(SPAWN_FD_MARGIN);
     // SAFETY: the pre-exec closure and fork child use only async-signal-safe
     // system calls and stack data. The child never returns into Rust. Closing
     // all fds also closes std's exec-error pipe, so spawn can finish. The
@@ -44,9 +52,10 @@ pub(super) fn attach(cmd: &mut Command) -> io::Result<PipeWriter> {
                         sys::kill(0, libc::SIGKILL);
                         libc::_exit(1);
                     }
-                    for other in 1..limit {
-                        libc::close(other);
-                    }
+                    // Keep only fd 0 (the lifetime read end). Linux:
+                    // close_range(2); else close through the pre-fork high-water
+                    // mark (man close(2)).
+                    sys::close_fds_from(1, through);
                     let mut byte = 0u8;
                     // Nobody writes data. A read error also fails closed.
                     while libc::read(0, (&mut byte as *mut u8).cast(), 1) > 0 {}

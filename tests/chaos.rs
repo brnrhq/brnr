@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use std::fs;
 use std::io::Write;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const WAIT: Duration = Duration::from_secs(15);
 /// 7 and 23 fault at initialize in setup, 41 at session/new; in a turn
@@ -388,6 +388,137 @@ fn adr_0003_killed_host_leaves_no_agent_or_child_behind() {
         descendant.gone();
         recovered(&env, true);
     }
+}
+
+/// Raises the soft `RLIMIT_NOFILE` to the hard limit when the kernel allows
+/// it, so a `_SC_OPEN_MAX` close loop would pay for a huge soft ceiling.
+fn raise_nofile_soft_to_hard() {
+    // SAFETY: get/setrlimit with RLIMIT_NOFILE and a rlimit of ours.
+    unsafe {
+        let mut lim = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) != 0 {
+            return;
+        }
+        lim.rlim_cur = lim.rlim_max;
+        let _ = libc::setrlimit(libc::RLIMIT_NOFILE, &lim);
+    }
+}
+
+/// Pids in `pgid` as `(pid, ppid)`, from a full `ps` table (portable `-axo`).
+fn group_members(pgid: i32) -> Vec<(i32, i32)> {
+    let out = Command::new("ps").args(["-axo", "pid=,ppid=,pgid="]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            let pid: i32 = parts.next()?.parse().ok()?;
+            let ppid: i32 = parts.next()?.parse().ok()?;
+            let g: i32 = parts.next()?.parse().ok()?;
+            (g == pgid).then_some((pid, ppid))
+        })
+        .collect()
+}
+
+/// Open numeric fds of `pid`. Linux: `/proc/<pid>/fd`. Elsewhere: `lsof`.
+fn open_fds(pid: i32) -> Option<Vec<i32>> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut fds = Vec::new();
+        for entry in fs::read_dir(format!("/proc/{pid}/fd")).ok()? {
+            let name = entry.ok()?.file_name();
+            if let Ok(n) = name.to_str()?.parse() {
+                fds.push(n);
+            }
+        }
+        fds.sort_unstable();
+        return Some(fds);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let out = Command::new("lsof")
+            .args(["-a", "-n", "-P", "-p", &pid.to_string(), "-d", "0-999", "-F", "f"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let mut fds = Vec::new();
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if let Some(n) = line.strip_prefix('f')
+                && let Ok(fd) = n.parse()
+            {
+                fds.push(fd);
+            }
+        }
+        fds.sort_unstable();
+        Some(fds)
+    }
+}
+
+/// Whether fd 0 of `pid` is a pipe (the lifetime read end).
+fn fd0_is_pipe(pid: i32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(target) = fs::read_link(format!("/proc/{pid}/fd/0")) else {
+            return false;
+        };
+        target.to_string_lossy().starts_with("pipe:")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let Ok(out) = Command::new("lsof")
+            .args(["-a", "-n", "-P", "-p", &pid.to_string(), "-d", "0", "-F", "t"])
+            .output()
+        else {
+            return false;
+        };
+        String::from_utf8_lossy(&out.stdout).lines().any(|l| l == "tPIPE" || l == "tFIFO")
+    }
+}
+
+/// The lifetime watcher keeps only its pipe open, and starting stays fast
+/// even when the soft NOFILE ceiling is raised to the hard limit (#391).
+#[test]
+fn adr_0003_lifetime_watcher_keeps_only_its_pipe() {
+    raise_nofile_soft_to_hard();
+    let env = Env::new("chaos-watcher-fds");
+    let started = Instant::now();
+    env.start(&[]);
+    let took = started.elapsed();
+    // A loop to `_SC_OPEN_MAX` (~1M closes) alone is ~1s here; with start
+    // work that overshoots this budget. The bounded close must not.
+    assert!(
+        took < Duration::from_secs(3),
+        "session new with a high soft NOFILE took {took:?}; close may be O(OPEN_MAX)"
+    );
+
+    let (host, agent) = processes(&env);
+    let members = group_members(agent.pid);
+    let watchers: Vec<_> =
+        members.into_iter().filter(|(pid, _)| *pid != agent.pid && *pid != host.pid).collect();
+    assert_eq!(watchers.len(), 1, "expected one watcher in the agent group: {watchers:?}");
+    let (watcher, ppid) = watchers[0];
+
+    let Some(fds) = open_fds(watcher) else {
+        skip("cannot list the watcher's fds (no /proc or lsof)");
+        return env.stop();
+    };
+    assert_eq!(fds, vec![0], "watcher {watcher} still holds {fds:?}");
+    assert!(fd0_is_pipe(watcher), "watcher fd 0 is not a pipe");
+
+    #[cfg(target_os = "linux")]
+    {
+        assert_ne!(ppid, agent.pid, "watcher ppid {ppid} is still the agent");
+        assert_eq!(fds, vec![0]);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = ppid;
+    }
+
+    env.stop();
+    host.gone();
+    agent.gone();
 }
 
 #[test]

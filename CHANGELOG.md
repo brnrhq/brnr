@@ -65,6 +65,8 @@ brnr's own conventions:
   kills the agent's process group when the host dies, including a hung
   agent and children that ignore SIGTERM (#391). Processes that leave
   the group, bridges, and a watcher killed too remain outside the guarantee.
+  The watcher closes only through the fds actually open (Linux
+  `close_range`, else a bounded loop), not `_SC_OPEN_MAX`.
 
 ## [0.12.0] - 2026-10-27
 

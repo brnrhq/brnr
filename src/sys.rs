@@ -24,15 +24,56 @@ pub(crate) fn kill(pid: pid_t, sig: c_int) -> bool {
     unsafe { libc::kill(pid, sig) == 0 }
 }
 
-/// The exclusive descriptor bound for a process that has not lowered its
-/// descriptor limit after opening files.
-pub(crate) fn open_max() -> io::Result<c_int> {
-    // SAFETY: sysconf takes a constant and touches no memory of ours.
-    let limit = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
-    if limit < 0 {
-        return Err(io::Error::last_os_error());
+/// Highest open descriptor number in this process (`/dev/fd`). For bounding a
+/// close loop before fork; not async-signal-safe, so not after a multithreaded
+/// fork. The listing's own descriptor is included.
+pub(crate) fn highest_open_fd() -> io::Result<c_int> {
+    let mut high = 2;
+    for entry in std::fs::read_dir("/dev/fd")? {
+        let name = entry?.file_name();
+        if let Ok(n) = name.to_str().unwrap_or("").parse::<c_int>() {
+            high = high.max(n);
+        }
     }
-    c_int::try_from(limit).map_err(|_| io::Error::other("descriptor limit exceeds c_int"))
+    Ok(high)
+}
+
+/// Closes every descriptor from `first` through `through` inclusive. On Linux
+/// tries [`close_range`](https://man7.org/linux/man-pages/man2/close_range.2.html)
+/// (`first`..∞) first; on ENOSYS/EINVAL (kernels before 5.9) and on other OSes,
+/// falls back to [`close`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/close.html)
+/// each fd through `through`. Only async-signal-safe calls: for a
+/// single-threaded fork child that never returns to Rust.
+///
+/// # Safety
+///
+/// The caller has forked, is single-threaded, will not return to Rust, and
+/// `through` is at least every fd that could still be open at or above
+/// `first` (except those Linux `close_range` covers past `through`).
+pub(crate) unsafe fn close_fds_from(first: c_int, through: c_int) {
+    if first < 0 || through < first {
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // SYS_close_range is in libc for gnu and musl; the glibc wrapper is not
+        // on musl. flags 0: close, do not set CLOEXEC (man close_range(2)).
+        // SAFETY: syscall takes integer args only; close_range is sound for any
+        // first/last/flags (a bad range is an error).
+        let rc = unsafe {
+            libc::syscall(libc::SYS_close_range, first as libc::c_ulong, libc::c_ulong::MAX, 0usize)
+        };
+        if rc == 0 {
+            return;
+        }
+    }
+    let mut fd = first;
+    while fd <= through {
+        // SAFETY: close(2) takes a descriptor number and touches no memory of
+        // ours; a bad fd is EBADF.
+        unsafe { libc::close(fd) };
+        fd += 1;
+    }
 }
 
 /// Whether `file` has an extended ACL. On macOS one grants access its mode
