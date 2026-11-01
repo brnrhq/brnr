@@ -59,6 +59,12 @@ brnr's own conventions:
   links the section (ADR 1, N1 and P13; ADR 7.1; ADR 12.1–12.2).
 - Releasing says what the 1.0.0 release pull request changes by hand: each ADR's status line becomes Accepted, and ADR 8.4's promise is said to apply (ADR 8.4, ADR 11.4).
 
+### Changed
+
+- The `session` command reference is split: a terse lookup page plus
+  [session details](docs/reference/session-details.md) for lifecycle and
+  edge cases (ADR 11.8; #427).
+
 ## [0.12.0] - 2026-10-27
 
 ### Added

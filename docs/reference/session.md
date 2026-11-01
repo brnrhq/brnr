@@ -1,21 +1,23 @@
 # session
 
-A session is the agent's conversation, named by the id the agent gave it. A
-headless session is in a process that `session new` or `session resume`
-starts; an editor's is in the process its `brnr acp` starts.
+A session is the agent's conversation, named by the id the agent gave it.
+A headless session is in a process that `session new` or `session resume`
+starts; an editor's is in the process its `brnr acp` starts. Lifecycle and
+edge cases: [Session details](session-details.md).
 
 ## `brnr session new`
 
-Starts a process for a headless session, in the background (or the
-foreground), and opens a new session in it. It sets the cwd, logs in and sets
-the session's settings, then sends the prompt, if there is one. With
-`--pid <pid>`, it opens the session in that running process instead.
+Starts a process for a headless session (background or foreground) and opens
+a new session in it: cwd, login, settings, then the prompt if any. With
+`--pid <pid>`, opens the session in that running process instead.
 
     brnr session new [--pid <pid>] [<new flags>] [-- <agent> [args...]]
 
 `<new flags>` are the [process flags](#process-flags), the
-[session flags](#session-flags) and the [prompt flags](#prompt-flags) below.
-`session resume` takes the same flags.
+[session flags](#session-flags) and the [prompt flags](#prompt-flags).
+`session resume` takes the same flags. Start commit, `--pid` refusals and
+timeouts are in
+[session new: start commit and pid](session-details.md#session-new-start-commit-and-pid).
 
 ### Process flags
 
@@ -30,24 +32,6 @@ the session's settings, then sends the prompt, if there is one. With
 | `--quiet` | With `--foreground`: show nothing. |
 | `-- <agent> [args...]` | The agent to run, in place of the profile's. |
 
-`--pid <pid>` opens the session in a running headless process, with its
-agent, profile and MCP servers. The process flags and `-- <agent>` are a
-usage error with it.
-
-- An editor's process refuses (`process_owned_by_editor`), and so does a
-  process with `stop_when_idle` whose agent can't close sessions
-  (`capability_missing`).
-- The session, its settings (over the profile's) and the prompt commit as
-  one. A setting that fails after the agent opened the session closes it
-  again, and the error says so; for an agent that can't close sessions, the
-  error names the session left open.
-- The start timeout goes to the process, which abandons the opening the same
-  way once it passes; the command waits 10 s longer. A process stopping
-  meanwhile fails it. A command gone first (Ctrl-C) leaves no session. None
-  of these sends the prompt.
-- A process with a session being opened doesn't stop as its other sessions
-  close or go idle meanwhile.
-
 ### Session flags
 
 | Flag | Meaning |
@@ -58,10 +42,8 @@ usage error with it.
 | `--thought-level <l>` | The config option of category `thought_level`. |
 | `--option <o>=<v>` | Config option `<o>`, by its id. Repeatable. |
 
-These are set before the first prompt, and win over the profile's, setting
-by setting. Two values for one setting fail before anything is sent, as do a
-mode, model or thought level the agent has no option for
-([`config set`](config.md#brnr-config-set) has the rules).
+Session-flag precedence and conflicts:
+[session new: flags and input](session-details.md#session-new-flags-and-input).
 
 ### Prompt flags
 
@@ -75,15 +57,10 @@ mode, model or thought level the agent has no option for
 | `--timeout <s>` | With `--wait`: give up waiting after this many seconds, exit 124. Without `--wait` it is a usage error. It doesn't end the session or its turn. |
 | `--json` | Print the result as JSON. |
 
-A word left over, such as a prompt given as words without `--prompt`, is a
-usage error. A file or image that can't be read stops the command before
-anything is sent (`input_invalid`).
-[Files and images](../adr/0006-settings-and-profiles.md#64-files-and-images-in-a-message)
-has their encoding and what the agent must support.
-
-With `--wait`, approvals, elicitations and the startup line (`started
-sess-1 (process 4466)`) go to stderr, so that stdout is the agent's reply and
-nothing else (`brnr session new --wait … > answer.md`).
+Leftover words and unreadable attachments:
+[session new: flags and input](session-details.md#session-new-flags-and-input).
+With `--wait`, approvals, elicitations and the startup line go to stderr, so
+stdout is the agent's reply (`brnr session new --wait … > answer.md`).
 
 **Output** (`--json`, without `--wait`):
 
@@ -141,7 +118,6 @@ ended with `end_turn`); 1 if it failed to start, or (with `--wait`) the turn
 failed, stopped otherwise or its message was dropped; 124 when `--timeout`
 passes; 3 when it was cut off and couldn't catch up; 2 for a usage error.
 With `--foreground`, the agent's exit status; a failed start is nonzero.
-[Exit codes](exit-codes.md) has the rules.
 **Errors:** `config_invalid`, `profile_not_found`, `agent_not_started`,
 `acp_version_unsupported`, `agent_exited`, `agent_failed`, `setting_invalid`,
 `capability_missing`, `input_invalid`, `start_timed_out`; with `--pid`, also
@@ -150,30 +126,17 @@ With `--foreground`, the agent's exit status; a failed start is nonzero.
 
 ## `brnr session resume`
 
-Starts a process and carries on an existing session in it: `session/resume`,
-or `session/load` where the agent has only that. It takes the flags of
-[`session new`](#brnr-session-new), and prints the same.
+Starts a process and carries on an existing session:
+`session/resume`, or `session/load` where the agent has only that. Same flags
+and output as [`session new`](#brnr-session-new). Which agent and cwd it
+uses is in
+[session resume: which agent and cwd](session-details.md#session-resume-which-agent-and-cwd).
 
     brnr session resume [--pid <pid>] <session> [--take-over] [<new flags>] [-- <agent> [args...]]
 
 | Flag | Meaning |
 |---|---|
 | `--take-over` | Ask the process that holds the session to close it first, as `session close` does. With `--pid`, it first checks that the process would take it: it isn't starting or stopping, and its agent can resume sessions. |
-
-Which agent and cwd it uses:
-
-- A session brnr has a transcript of resumes with the cwd, agent and profile
-  of the newest record of all its files, in every project folder. `--cwd`,
-  `--profile` and `-- <agent>` override them.
-- A session brnr has no transcript of (one only the agent knows) is resumed
-  by its id with the agent after `--`, else the profile's (`--profile`, else
-  `default`); with neither, it fails (`agent_not_started`). Its cwd is
-  `--cwd`, else the profile's `cwd`, else the current directory.
-- With `--pid`, the agent is that process's. The cwd is `--cwd`, else the
-  recorded cwd, else the current directory.
-
-With `--pid`, a session open in that process already is refused, and one
-another process holds is refused unless `--take-over`.
 
 **Output** (`--json`, without `--wait`); with `--wait`, as
 [`session new --wait --json`](#brnr-session-new):
@@ -199,7 +162,9 @@ without `--take-over`), `session_closing`.
 
 ## `brnr session status`
 
-Reads a running session's current state.
+Reads a running session's current state. How the `_count` fields relate to
+the list commands is in
+[session status: counts vs lists](session-details.md#session-status-counts-vs-lists).
 
     brnr session status <session> [--json]
 
@@ -245,10 +210,6 @@ Reads a running session's current state.
 | `stopping` | boolean | Whether the process is stopping. |
 | `uptime` | number | Seconds since the process started. |
 
-The `_count` fields are counts. Use `permission requests`, `elicitation
-requests` and `queue list` for what they count. Tool, plan, usage and token
-data come from the agent.
-
 <!-- example: brnr session status $s --json; before: Idle -->
 ```json
 {
@@ -290,7 +251,9 @@ data come from the agent.
 }
 ```
 
-Text output: the same, line by line.
+Text output: the state as people read it (`idle`, `working`, `working for
+…`, `waiting for an approval…`, `waiting for input…`), then tools, plan,
+counts and the rest, line by line.
 
 **Exit codes:** 0; 1 if it fails.
 **Errors:** [those of a running session](errors.md#a-running-session).
@@ -356,10 +319,10 @@ Text output: `closed sess-1`.
 
 ## `brnr session delete`
 
-Deletes the agent's copy of an inactive session (`session/delete`), through
-the agent recorded for it, which it starts for that, or the one `--profile`
-or `-- <agent>` names. brnr's transcript stays, with a `session_deleted`
-record, unless `--purge`.
+Deletes the agent's copy of an inactive session (`session/delete`). brnr's
+transcript stays unless `--purge`. Refusals, lock and purge exit codes are
+in
+[session delete: agent copy vs brnr transcript](session-details.md#session-delete-agent-copy-vs-brnr-transcript).
 
     brnr session delete <session> [--purge] [--profile <p>] [--json] [-- <agent> [args...]]
 
@@ -369,11 +332,6 @@ record, unless `--purge`.
 | `--profile <p>` | The agent of this profile, for a session brnr has no transcript of. |
 | `-- <agent> [args...]` | This agent. |
 | `--json` | Print what it did as JSON. |
-
-A session open in a process is refused: close it first. So is an agent
-without `sessionCapabilities.delete`. The session's lock is held while the
-agent deletes it. A transcript made private first is said on stderr,
-`path_made_private: <path> (its mode was …)`.
 
 **Output** (`--json`):
 
@@ -403,13 +361,11 @@ agent deletes it. A transcript made private first is said on stderr,
 Text output: `deleted sess-1; brnr's transcript of it stays (brnr event log
 sess-1)`, or with `--purge` the files deleted.
 
-**Exit codes:** 0 once the agent has deleted the session. 1 if it didn't (its
-error, or no answer), with `--purge` too, but for an agent that doesn't have
-it (ACP's `resource_not_found`, `-32002`): then, with `--purge`, 0, brnr's
-transcript deleted. The pinned `brnr-claude-adapter`
-([adapters/package.json](https://github.com/brnrhq/brnr/blob/main/adapters/package.json))
-doesn't answer that: it answers `-32603`. 1 too if a file couldn't be deleted
-or recorded in; the others are done all the same.
+**Exit codes:** 0 once the agent has deleted the session; 1 if it didn't or a
+file couldn't be deleted or recorded in; with `--purge`, 0 for ACP
+`resource_not_found` (`-32002`). The pinned adapter's answer and other
+nuance are in
+[session delete: agent copy vs brnr transcript](session-details.md#session-delete-agent-copy-vs-brnr-transcript).
 **Errors:** `session_active`, `session_closing`, `agent_not_started` (no agent
 recorded or named), `capability_missing`, `agent_failed`.
 
@@ -417,11 +373,9 @@ recorded or named), `capability_missing`, `agent_failed`.
 
 Deletes brnr's transcripts of the sessions last active more than `<s>`
 seconds ago, and the host logs of the processes that have gone and were,
-as `session delete --purge` deletes them. Nothing is asked of an agent: its
-own copy of a session stays. By default brnr keeps everything; the
-config's [`retention`](configuration.md#retention) has every process do
-this as it starts
-([ADR 9.5](../adr/0009-security-and-privacy.md#95-transcripts-are-kept-until-they-are-pruned)).
+as `session delete --purge` deletes them. It does not ask an agent. Age,
+locks and retention are in
+[session prune: age, locks, retention](session-details.md#session-prune-age-locks-retention).
 
     brnr session prune --older-than <s> [--dry-run] [--json]
 
@@ -430,14 +384,6 @@ this as it starts
 | `--older-than <s>` | The age, in seconds: what was last active before this many seconds ago goes. `0` is every session no process has open. Needed. |
 | `--dry-run` | Say what would be deleted, and delete nothing. |
 | `--json` | Print what it did as JSON. |
-
-- A session's age is its last activity, `session list`'s `last_active`:
-  the newest record a process wrote in any of its files, not a deletion.
-- Never pruned: a session open in a process or whose lock is held, the
-  host log of a running process, and a file brnr can't read the age of (in
-  another format, or with no record).
-- A session's lock is held while its files go, and its age read again: one
-  used since it was listed stays. Its events file goes last.
 
 **Output** (`--json`):
 
@@ -490,17 +436,17 @@ than 0s ago):`, then each session and host log with its last activity and
 its files; `would prune` with `--dry-run`; or `nothing was last active
 before …`. Each file not deleted is on stderr, `brnr: not deleted: <why>`.
 
-**Exit codes:** 0; 1 if a file couldn't be deleted, the others deleted all
-the same, or if it fails.
+**Exit codes:** 0; 1 if a file couldn't be deleted (others deleted all the
+same) or if it fails.
 **Errors:** `unclassified` (a runtime directory that can't be read: which
 sessions are open must be known).
 
 ## `brnr session list`
 
-brnr's sessions, open and with a transcript, in every cwd, with nothing
-started. With `--profile` or `-- <agent>`, only the cwd's, joined on the
-session id with the agent's own list (`session/list`, every page, from the
-agent started just for that).
+brnr's sessions (open and with a transcript), every cwd, nothing started.
+With `--profile` or `-- <agent>`, only the cwd's, joined with the agent's
+`session/list`. Cwd matching and agent merge are in
+[session list: cwd matching and agent merge](session-details.md#session-list-cwd-matching-and-agent-merge).
 
     brnr session list [--include active,inactive] [--profile <p>] [--cwd <dir>] [--json] [-- <agent> [args...]]
 
@@ -511,12 +457,6 @@ agent started just for that).
 | `--cwd <dir>` | Only this directory's sessions. Here when an agent is asked and this isn't given. |
 | `-- <agent> [args...]` | Also ask this agent for its sessions. |
 | `--json` | Print the list as JSON. |
-
-- A cwd is the same however it is spelled (a trailing slash, a symlink).
-- With an agent, a session open in a process that the agent lists in the cwd
-  is the cwd's, whatever its recorded cwd. An `unreachable` session is the
-  cwd's if the agent lists it there or brnr has its transcript there.
-- An agent that can't list sessions fails the command (`capability_missing`).
 
 **Output** (`--json`): rows most recently active first.
 
@@ -535,12 +475,6 @@ agent started just for that).
 | `sessions[].last_active` | string or null | When it was last active. An agent's `updatedAt` is converted to UTC from its offset. Null where it isn't known. |
 | `sessions[].forked_from` | string or null | The session a fork came from, as `session status` has it; once its process has ended, from its transcript's first record. Null for one that isn't a fork, and for a row only the agent knows. |
 | `sessions[].cwd` | string or null | Its working directory; null where it isn't known. |
-
-Rows are ordered by the time `last_active` names. An agent's `updatedAt` that
-isn't an RFC 3339 time is passed on as the agent gave it, after the rows with
-a time, and said on stderr. A session only the agent knows is `inactive`,
-with `pid` null. `forked_from` is the session a fork came from, by `session
-fork` or an editor's `session/fork` through `brnr acp`.
 
 <!-- example: brnr session list --json; before: Idle -->
 ```json

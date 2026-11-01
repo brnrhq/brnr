@@ -96,6 +96,7 @@ const REFERENCE: &[&str] = &[
     "docs/reference/overview.md",
     "docs/reference/process.md",
     "docs/reference/session.md",
+    "docs/reference/session-details.md",
     "docs/reference/prompt.md",
     "docs/reference/queue.md",
     "docs/reference/permission.md",

@@ -825,9 +825,9 @@ fork`](session.md#brnr-session-fork) does. Never in an editor's process.
 
 Opens a session in this process (`session/new`, with the process's MCP
 servers), sets its settings over the profile's, then sends the prompt, if
-there is one: [`session new --pid`](session.md#brnr-session-new). Refused by
-an editor's process, and with `stop_when_idle` when the agent can't close
-sessions.
+there is one: [`session new --pid`](session-details.md#session-new-start-commit-and-pid).
+Refused by an editor's process, and with `stop_when_idle` when the agent
+can't close sessions.
 
 **Request:**
 
@@ -863,9 +863,9 @@ says so, or names it, left open, when the agent can't close sessions.
 
 Opens an existing session in this process: `session/resume`, or
 `session/load` where the agent has only that.
-[`session resume --pid`](session.md#brnr-session-resume). The session's lock
-is taken first, so one another process holds, or this one serves, is
-refused.
+[`session resume --pid`](session-details.md#session-resume-which-agent-and-cwd).
+The session's lock is taken first, so one another process holds, or this one
+serves, is refused.
 
 **Request:** `session`, and the fields of `new`, `cwd` being the session's.
 

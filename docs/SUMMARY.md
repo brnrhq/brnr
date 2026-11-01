@@ -25,6 +25,7 @@
 - [Overview](reference/overview.md)
 - [process](reference/process.md)
 - [session](reference/session.md)
+  - [Session details](reference/session-details.md)
 - [prompt](reference/prompt.md)
 - [queue](reference/queue.md)
 - [permission](reference/permission.md)
