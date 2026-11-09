@@ -7,6 +7,6 @@
     "@agentclientprotocol/codex-acp": "2.2.2"
   },
   "devDependencies": {
-    "@brokkai/muse-acp": "0.16.0"
+    "@brokkai/muse-acp": "0.20.0"
   }
 }

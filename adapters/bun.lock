@@ -9,7 +9,7 @@
         "@agentclientprotocol/codex-acp": "2.2.2",
       },
       "devDependencies": {
-        "@brokkai/muse-acp": "0.16.0",
+        "@brokkai/muse-acp": "0.20.0",
       },
     },
   },
@@ -42,7 +42,7 @@
 
     "@babel/runtime": ["@babel/runtime@7.29.7", "", {}, "sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw=="],
 
-    "@brokkai/muse-acp": ["@brokkai/muse-acp@0.16.0", "", { "os": [ "linux", "win32", "darwin", ], "cpu": [ "x64", "arm64", ], "bin": { "muse-acp": "bin/muse-acp.cjs" } }, "sha512-8zmcNtk8oKiyqXbiLPxzBPR4mhQ7KH+vikjX8jPAOZg6E9aqTJSsXg2wteLlJ5xzpi1f8LLBnNz4UtsaqABlBQ=="],
+    "@brokkai/muse-acp": ["@brokkai/muse-acp@0.20.0", "", { "os": [ "linux", "win32", "darwin", ], "cpu": [ "x64", "arm64", ], "bin": { "muse-acp": "bin/muse-acp.cjs" } }, "sha512-ywn5QheEkpPu7htwIqNRPtRLHt4x91HhERSzBCTAC9w58bBO2ODG+ChDu5QJsdzcLCnjH7BDSk933yOYYFp5QQ=="],
 
     "@hono/node-server": ["@hono/node-server@2.1.3", "", { "peerDependencies": { "hono": "^4" } }, "sha512-TA//nWMqPhbfdfneACk6t5a9eqbS9lABEPyKn0/xZTah3H3U2XaVg85rJFl0/Fyit0I552YDHgXGVSf3GwqbUw=="],
 
