@@ -4,7 +4,7 @@
   "description": "ACP adapters built from source as standalone executables. The agents themselves (Claude Code, Codex, Muse Code) are not bundled.",
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.94.0",
-    "@agentclientprotocol/codex-acp": "2.2.2"
+    "@agentclientprotocol/codex-acp": "2.5.0"
   },
   "devDependencies": {
     "@brokkai/muse-acp": "0.16.0"
