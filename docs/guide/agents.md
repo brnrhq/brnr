@@ -147,3 +147,19 @@ restrictions can limit remote access, but do not stop these programs
 from running local commands. The [OS sandbox](#an-os-sandbox) is the
 boundary. A deny list must cover every spelling of a command; an allow
 list still needs sandbox limits on remote reads and program starts.
+
+<!-- classification: every verb, Spec, transport flag and entry point brnr's
+parser has, each in one class; aliases such as -V, -h and --help are left
+out. tests/classification.rs fails when one is missing here or is no longer
+brnr's. deny and allow are the rules above (the test checks each name is in
+their paragraphs); writes and disrupts say what a verb does; unlisted is not
+on the allow list, and no rule above names it. This checks that each has
+been considered, not that these rules are a complete policy: only an OS
+sandbox holds.
+deny: acp, host, _remote, --remote, doctor, remote check, session new, session resume, session fork, session delete, session list, prompt send, permission allow, elicitation accept, config set, event notify
+writes: skill install, session prune
+disrupts: process stop, session close, prompt cancel, queue drop, queue clear, elicitation decline, elicitation cancel
+allow: session status, event log, event watch, event wait, permission requests, permission show, elicitation requests, elicitation show, config get
+unlisted: --version, process list, prompt commands, queue list, queue show, profile list, profile show, profile keys, skill, permission reject
+note: the threat model says to deny brnr profile to keep an agent from the profiles; profile show prints agent arguments, and queue show queued prompt text. permission reject --option-id can pick an option of an agent-defined kind (src/host/approvals.rs), so it isn't shown not to escalate.
+-->

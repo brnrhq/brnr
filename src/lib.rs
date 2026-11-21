@@ -126,6 +126,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         return code;
     }
     let mut args = args.into_iter();
+    // A new entry point needs a classification in docs/guide/agents.md (tests/classification.rs).
     match args.next() {
         Some(cmd) if cmd == "acp" => {
             bug::install("acp");
